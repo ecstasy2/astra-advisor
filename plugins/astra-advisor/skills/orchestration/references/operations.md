@@ -68,17 +68,91 @@ subagent's actual result and evidence to the parent.
 The following is the known capability snapshot for routing. It is guidance for a
 selection, not a contract that overrides live tool metadata:
 
-| Model | Efforts known in the current snapshot |
-| --- | --- |
-| `gpt-5.6-sol` | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
-| `gpt-5.6-terra` | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
-| `gpt-5.6-luna` | `low`, `medium`, `high`, `xhigh`, `max` |
+| Model | Lane | Efforts known in the current snapshot |
+| --- | --- | --- |
+| `gpt-5.6-sol` | native | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
+| `gpt-5.6-terra` | native | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
+| `gpt-5.6-luna` | native | `low`, `medium`, `high`, `xhigh`, `max` |
+| `gpt-5.3-codex-spark` | native, **bridge only** | `low` (relay work only; never an implementer or reviewer) |
+| `claude-opus-5` | bridge | `low`, `medium`, `high`, `xhigh`, `max` (`claude --effort`) |
+| `claude-sonnet-5` | bridge | `low`, `medium`, `high`, `xhigh`, `max` |
+| `claude-haiku-4-5` | bridge | `low`, `medium`, `high`, `xhigh`, `max` |
 
 Inspect the current tool metadata when selecting and invoking a subagent. A changed
 live capability list wins over this snapshot. If the selected model, effort, explicit
 spawn control, or required tool is unavailable, conflicting, or unobservable, fail
 the affected delegation closed. Continue safe parent work when possible and report
 the limitation; never silently substitute another model, effort, or tool.
+
+## Claude bridge lane
+
+The bridge is the only way a Claude model enters the pool. `collaboration.spawn_agent`
+resolves `model` against Codex's own catalog, so a Claude id passed there must fail
+closed. Instead:
+
+1. **Preflight.** Confirm `gpt-5.3-codex-spark` appears in the live spawn schema, the
+   sandbox permits outbound network (the bridge calls the Anthropic API), and `claude`
+   resolves on PATH. Any miss fails the lane closed with the reason named.
+2. **Spawn the bridge.** `collaboration.spawn_agent` with `model: gpt-5.3-codex-spark`,
+   `reasoning_effort: low`, `fork_turns: none`, a `task_name` such as
+   `bridge_review_auth_boundary`, and a message that contains the exact command to run
+   and the exact prompt to feed it. The bridge holds one of the four concurrency slots
+   while it waits.
+3. **The bridge runs the installed script** with the prompt on stdin, from the repo
+   root, resolving the path relative to this installed reference:
+   [`scripts/claude_bridge.py`](../../../scripts/claude_bridge.py).
+
+   ~~~text
+   printf '%s' "<prompt>" | python3 <plugin>/scripts/claude_bridge.py \
+     --model claude-sonnet-5 --effort high --mode implement|review \
+     --agent-id <bridge agent id> --out .astra/<task_name>.json \
+     [--resume <claude session_id>] [--max-budget-usd 2.00] [--allow-tool 'Bash(npm test)']
+   ~~~
+
+   `--mode review` runs Claude in plan mode with the `ASTRA REVIEW` output contract
+   appended to its system prompt; every mutating tool is blocked and
+   `--permission-prompts none` denies anything that would ask, so a headless run can
+   neither edit nor hang. `--mode implement` runs `acceptEdits` inside the workspace;
+   shell commands need explicit `--allow-tool` rules. The script never uses
+   `bypassPermissions`. Follow-up turns pass `--resume <session_id>` so Claude keeps
+   its context; `followup_task` on the bridge is the native way to trigger that.
+4. **Relay verbatim.** The bridge's final answer is the script's `CLAUDE RESULT` block,
+   unchanged. It does not paraphrase, fix, summarize, or add work. If the script exits
+   non-zero the block carries `status: failed (...)` and the bridge still relays it.
+5. **Astra reads the raw JSON** at `--out` (and `<out>.call.json`) as the source of
+   truth for the result text, `session_id`, observed model, and usage. The relay is a
+   notification, not evidence.
+
+Evidence: Claude Code's result JSON reports `session_id`, `modelUsage[*].canonicalModel`,
+`usage.service_tier`, and token usage with the 5m/1h cache-write split. Treat the
+canonical model as **observed**. Claude Code does not echo `--effort`, so report the
+Claude effort as requested/unobservable, exactly as for a native subagent whose
+metadata omits it. A `--mode review` run is enforced read-only by plan mode, so the
+skill may claim read-only isolation for it. The bridge agent itself is a native
+subagent: report its status and settings as usual.
+
+Hazards to name in the lifecycle updates when they apply: the bridge occupies a
+concurrency slot while idle (for many Claude workers, have one bridge run several
+script invocations sequentially or in the background rather than spawning one bridge
+per worker); all agents share the filesystem, so bound Claude's owned files exactly
+as for a native subagent; the bridge's own tokens are real cost with no public rate,
+so its calls appear in the receipt as `unavailable`, never zero.
+
+Lifecycle blocks for a bridge dispatch use the same shape as native ones, with the
+lane made explicit:
+
+~~~text
+ASTRA DELEGATE <name>
+task: <bounded deliverable and owned files>
+requested: gpt-5.3-codex-spark / low  ->  claude-sonnet-5 / high (bridge, mode=review)
+reason: <why this work warrants a Claude model and this effort>
+
+ASTRA RESULT <name> / <bridge agent ID or unavailable>
+status: <completed, failed, interrupted, or blocked; actual evidence>
+requested: gpt-5.3-codex-spark / low  ->  claude-sonnet-5 / high
+observed: <bridge model or unobservable>  ->  <canonicalModel from raw JSON> / unobservable
+evidence: <native metadata source>  ->  <path to raw result JSON>; session <session_id>
+~~~
 
 ## Evidence and review
 
@@ -88,9 +162,11 @@ the source of each value. Chosen values are not the same as runtime-confirmed va
 
 For substantial implementation, the parent first inspects the complete accumulated
 diff and reruns the requested checks. It then starts a fresh read-only reviewer in a
-new context. The reviewer can be `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna`,
-with an effort supported by live metadata, and must receive the exact change set,
-interfaces, constraints, and verification evidence. Ask it to return:
+new context. The reviewer can be `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna`
+natively, or `claude-opus-5`, `claude-sonnet-5`, or `claude-haiku-4-5` through the
+bridge in `--mode review`, with an effort supported by live metadata, and must receive
+the exact change set, interfaces, constraints, and verification evidence. Ask it to
+return:
 
 ~~~text
 ASTRA REVIEW
@@ -118,9 +194,12 @@ Follow any explicit starting-state request exactly.
 
 ChatGPT Work cloud `create_thread` does not accept `model` or `thinking`; omit both.
 Cloud work therefore cannot currently promise arbitrary model or effort control. Do
-not dispatch an incompatible model-pinned request there by default, and do not use an
-API key, nested CLI, or fabricated tool as a workaround. A future native work tool is
-usable only once its schema exposes the required controls.
+not dispatch an incompatible model-pinned request there by default, and do not fake
+cloud model control with an API key, a nested CLI, or a fabricated tool. A future
+native work tool is usable only once its schema exposes the required controls. The
+Claude bridge lane is a separate, documented local lane with its own enforceable
+controls and evidence; it is not a cloud workaround and must not be used to pretend
+that cloud work ran on a pinned model.
 
 ## Reporting
 
@@ -157,7 +236,8 @@ No API keys, external inference CLIs, billing-account queries, or dashboard are 
 Every task completion requires a visible receipt, including a task with no delegation
 or no accessible token telemetry. The calculator is Python standard library only:
 [calculator](../../../scripts/cost_receipt.py),
-[pricing snapshot](../../../pricing/2026-09-04.json).
+[pricing snapshot](../../../pricing/2026-09-06.json) (the earlier
+[2026-09-04 snapshot](../../../pricing/2026-09-04.json) remains for historical receipts).
 Resolve these paths relative to this installed reference, not a guessed cache version.
 
 Use only non-overlapping observed usage with an explicit source. Cumulative telemetry
@@ -165,19 +245,37 @@ snapshots are not additive calls. Never sum a parent-inclusive aggregate with ch
 totals. Do not turn message lengths into claimed observed usage. Missing usage or
 rates must remain unavailable, and partial coverage must state which work is missing.
 Whole-task coverage requires every parent and subagent call, including failed attempts,
-review, corrections, and final parent work. If the final response's tokens cannot yet
-be observed, identify the receipt's cutoff and do not claim whole-task completeness.
+bridge agents, Claude calls, review, corrections, and final parent work. If the final
+response's tokens cannot yet be observed, identify the receipt's cutoff and do not
+claim whole-task completeness.
 
-Cached input is a subset of total input. Output already contains reasoning tokens;
-never add them a second time. Explicit per-call standard short-context eligibility
-is required; unknown or unsupported long-context, service-tier, or cache-write pricing
-must not silently inherit standard rates. Effort is recorded without a rate multiplier.
+Cached input is a subset of total input. Anthropic cache writes are also a subset of
+total input, reported separately as `cache_write_5m_input_tokens` and
+`cache_write_1h_input_tokens` and priced at the model's published 1.25x / 2x write
+rates; a call that reports non-zero writes on a model with no write rate is
+`unavailable`, not discounted. Output already contains reasoning tokens; never add
+them a second time. Explicit per-call standard short-context eligibility is required;
+unknown or unsupported long-context or service-tier pricing must not silently inherit
+standard rates. Effort is recorded without a rate multiplier.
 
-The snapshot records USD per million tokens and official source URLs, with a
-2026-09-04 verification date supplied by the recording coordinator. It is a historical
-snapshot, not a live-price guarantee; Sol rates are promotional. Disclose the snapshot
-date and freshness when showing an estimate. Use a newly verified versioned snapshot
-if current prices are required. Do not silently change historical receipts.
+The snapshot records USD per million tokens and official source URLs with per-model
+verification dates supplied by the recording coordinator (OpenAI rows 2026-09-04,
+Anthropic rows 2026-09-06). It is a historical snapshot, not a live-price guarantee;
+Sol rates are promotional and `gpt-5.3-codex-spark` has no public API rate, so bridge
+agent usage stays `unavailable`. Disclose the snapshot date and freshness when showing
+an estimate. Use a newly verified versioned snapshot if current prices are required.
+Do not silently change historical receipts.
+
+For a bridge dispatch, the receipt lists two agents and two calls: the bridge
+(`role: delegate` or `reviewer`, model `gpt-5.3-codex-spark`, native telemetry or an
+explicit unavailable call) and the Claude run (same role, the `<out>.call.json` record
+the script wrote). The script maps Claude Code's `usage` onto the calculator schema:
+`input_tokens` = uncached + cache reads + cache writes, `cached_input_tokens` = cache
+reads, the 5m/1h split from `usage.cache_creation`, `reasoning_tokens` from
+`output_tokens_details.thinking_tokens`, `service_tier` observed. One script invocation
+is one atomic record (it sums that run's internal API iterations without overlap). The
+same-token Astra repricing charges cache-write tokens at Astra's base input rate and
+says so in its limitations.
 
 ~~~text
 API-EQUIVALENT COST RECEIPT
@@ -211,7 +309,9 @@ The version 1 input contains:
 - `calls`: globally unique `call_id`, declared `agent_id`, `model`, optional `effort`,
   and `aggregation: "atomic"`. Supply `usage.kind`, a non-empty `usage.source`, and
   `input_tokens`, `cached_input_tokens`, and `output_tokens` when known. Optional
-  `reasoning_tokens` is already included in output. Missing values stay unknown.
+  `cache_write_5m_input_tokens` / `cache_write_1h_input_tokens` (Anthropic) are
+  subsets of input alongside cached input. Optional `reasoning_tokens` is already
+  included in output. Missing values stay unknown.
 - Each call also declares `context: "standard"` and `service_tier: "standard"`, with
   `context_source` and `service_tier_source` set to `observed` or `assumed`. If runtime
   tier metadata is null, a clearly disclosed standard-price scenario is permitted;
@@ -232,7 +332,13 @@ or aggregate ownership is unclear, mark that coverage unavailable rather than
 inventing calls. Keep preparation-turn usage separate from the implementation turn
 when that is the declared task scope.
 
-The bundled calculator conservatively caps each call at 128,000 input tokens. This
-is an implementation support boundary, not an official model pricing threshold.
-Missing cache counts remain unknown; provide an explicit zero only when supported
-by the usage source. Unknown usage fields are rejected to avoid ignoring cache writes.
+The bundled calculator conservatively caps each call at 128,000 input tokens unless
+the model's pricing entry carries `max_standard_input_tokens` mirrored from its
+official page (Claude Opus 5 and Sonnet 5: 1,000,000 at standard rates; Claude Haiku
+4.5: 200,000). These are implementation support boundaries, not independent pricing
+claims. Missing cache counts remain unknown; provide an explicit zero only when
+supported by the usage source. Unknown usage fields are rejected.
+
+See the [illustrative bridge input](../../../examples/illustrative-bridge-usage.json)
+for an executable fixture of a parent + bridge + Claude reviewer receipt (its Spark
+call prices as unavailable by design).

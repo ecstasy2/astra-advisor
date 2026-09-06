@@ -77,7 +77,7 @@ manifest_path = plugin / ".codex-plugin" / "plugin.json"
 manifest = require_mapping(load_json(manifest_path, "plugin manifest"), "plugin manifest")
 
 require_string(manifest, "name", "plugin manifest", "astra-advisor")
-require_string(manifest, "version", "plugin manifest", "0.2.0")
+require_string(manifest, "version", "plugin manifest", "0.3.0")
 require_string(manifest, "description", "plugin manifest")
 require_string(manifest, "homepage", "plugin manifest", "https://github.com/DannyMac180/astra-advisor#readme")
 require_string(manifest, "repository", "plugin manifest", "https://github.com/DannyMac180/astra-advisor")
@@ -123,7 +123,17 @@ if operations_path.is_file():
         check_relative_link(target, operations_path.parent, "operations reference link")
 require((plugin / "scripts" / "cost_receipt.py").is_file(), "missing cost receipt calculator")
 require((plugin / "tests" / "test_cost_receipt.py").is_file(), "missing cost receipt tests")
-require((plugin / "pricing" / "2026-09-04.json").is_file(), "missing pricing snapshot")
+require((plugin / "scripts" / "claude_bridge.py").is_file(), "missing Claude bridge script")
+require((plugin / "tests" / "test_claude_bridge.py").is_file(), "missing Claude bridge tests")
+require((plugin / "pricing" / "2026-09-04.json").is_file(), "missing historical pricing snapshot")
+require((plugin / "pricing" / "2026-09-06.json").is_file(), "missing current pricing snapshot")
+require((plugin / "examples" / "illustrative-bridge-usage.json").is_file(), "missing illustrative bridge fixture")
+if skill_path.is_file():
+    require("claude_bridge.py" in skill_path.read_text(encoding="utf-8"), "orchestration SKILL.md must name the bridge script")
+if operations_path.is_file():
+    operations_text = operations_path.read_text(encoding="utf-8")
+    require("bypassPermissions" in operations_text and "never uses" in operations_text, "operations reference must state the bridge never uses bypassPermissions")
+    require("2026-09-06.json" in operations_text, "operations reference must point at the current pricing snapshot")
 
 if skill_path.is_file():
     skill_text = skill_path.read_text(encoding="utf-8")

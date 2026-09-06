@@ -12,7 +12,7 @@ from pathlib import Path
 
 PLUGIN = Path(__file__).resolve().parents[1]
 SCRIPT = PLUGIN / "scripts" / "cost_receipt.py"
-PRICING = PLUGIN / "pricing" / "2026-09-04.json"
+PRICING = PLUGIN / "pricing" / "2026-09-06.json"
 EXAMPLE = PLUGIN / "examples" / "illustrative-usage.json"
 SPEC = importlib.util.spec_from_file_location("cost_receipt", SCRIPT)
 assert SPEC and SPEC.loader
@@ -228,10 +228,10 @@ class CostReceiptTests(unittest.TestCase):
         for field in ("cache_write_tokens", "cache_write_input_tokens"):
             payload = whole_task()
             payload["calls"][0]["usage"][field] = 1
-            self.assert_invalid(payload, "cache-write telemetry is unsupported")
+            self.assert_invalid(payload, "unsupported fields")
         payload = whole_task()
         payload["calls"][0]["cache_write_tokens"] = 1
-        self.assert_invalid(payload, "cache-write telemetry is unsupported")
+        self.assert_invalid(payload, "unsupported fields")
 
         payload = whole_task()
         payload["calls"][0]["context"] = "long"
@@ -267,6 +267,109 @@ class CostReceiptTests(unittest.TestCase):
         self.assertEqual(result["calls"][1]["status"], "estimated")
         self.assertEqual(result["same_token_api_price_comparison"]["status"], "unavailable")
 
+    # --- Anthropic cache-write accounting (bridge lane) -----------------------------
+
+    def claude_call(self, call_id: str, agent_id: str, model: str = "claude-opus-5", **usage_overrides) -> dict:
+        call = atomic_call(call_id, agent_id, model, reasoning_tokens=None)
+        call["effort"] = None
+        call["usage"] = {
+            "kind": "observed",
+            "source": "claude -p --output-format json result.usage",
+            # total input = uncached 1000 + cached 4000 + 5m write 2000 + 1h write 3000
+            "input_tokens": 10000,
+            "cached_input_tokens": 4000,
+            "cache_write_5m_input_tokens": 2000,
+            "cache_write_1h_input_tokens": 3000,
+            "output_tokens": 1000,
+            "reasoning_tokens": 400,
+        }
+        call["usage"].update(usage_overrides)
+        return call
+
+    def test_cache_writes_priced_at_5m_and_1h_rates(self) -> None:
+        payload = whole_task()
+        payload["calls"][1] = self.claude_call("d1", "d")
+        result = self.calculate(payload)
+        call = result["calls"][1]
+        # opus-5: 1000*5 + 4000*0.5 + 2000*6.25 + 3000*10 + 1000*25 = 5000+2000+12500+30000+25000 = 74500 per 1M
+        self.assertEqual(call["status"], "available")
+        self.assertEqual(call["cost_usd"], "0.0745")
+        self.assertEqual(call["cache_write_5m_input_tokens"], 2000)
+        self.assertEqual(call["cache_write_1h_input_tokens"], 3000)
+        self.assertIsNone(call["effort"])
+        self.assertIn("cache_write", result["accounting"])
+
+    def test_cache_write_tokens_without_write_rate_is_unavailable(self) -> None:
+        payload = whole_task()
+        payload["calls"][1] = self.claude_call("d1", "d", model="gpt-5.6-luna")
+        result = self.calculate(payload)
+        self.assertEqual(result["calls"][1]["status"], "unavailable")
+        self.assertIn("cache_write", result["calls"][1]["reason"])
+
+    def test_zero_cache_writes_on_openai_model_still_price(self) -> None:
+        payload = whole_task()
+        payload["calls"][1] = self.claude_call(
+            "d1", "d", model="gpt-5.6-luna",
+            cache_write_5m_input_tokens=0, cache_write_1h_input_tokens=0,
+        )
+        result = self.calculate(payload)
+        self.assertEqual(result["calls"][1]["status"], "available")
+
+    def test_cache_components_must_fit_inside_input(self) -> None:
+        payload = whole_task()
+        payload["calls"][1] = self.claude_call("d1", "d", cache_write_1h_input_tokens=5000)
+        self.assert_invalid(payload, "subset")
+
+    def test_cache_write_requires_input_tokens(self) -> None:
+        payload = whole_task()
+        payload["calls"][1]["usage"] = {
+            "kind": "partial",
+            "source": "t",
+            "reason": "no input",
+            "cache_write_5m_input_tokens": 10,
+            "output_tokens": 5,
+        }
+        self.assert_invalid(payload, "requires input_tokens")
+
+    def test_same_token_comparison_folds_cache_writes_into_astra_input(self) -> None:
+        payload = whole_task()
+        payload["calls"][1] = self.claude_call("d1", "d")
+        result = self.calculate(payload)
+        comparison = result["same_token_api_price_comparison"]
+        self.assertEqual(comparison["status"], "available")
+        # Astra repricing of the claude call: (10000-4000)*10 + 4000*1 + 1000*50 = 60000+4000+50000 = 114000 per 1M
+        # p1: (1000-100)*10 + 100*1 + 200*50 = 9000+100+10000 = 19100 ; r1: 1000*10 + 100*50 = 15000
+        self.assertEqual(comparison["same_tokens_at_astra_api_price_usd"], "0.1481")
+        self.assertTrue(any("cache-write" in item for item in comparison["limitations"]))
+
+    def test_per_model_max_input_override(self) -> None:
+        payload = whole_task()
+        payload["calls"][1] = self.claude_call("d1", "d", model="claude-sonnet-5", input_tokens=500000, cached_input_tokens=400000)
+        result = self.calculate(payload)
+        self.assertEqual(result["calls"][1]["status"], "available")
+
+        payload = whole_task()
+        payload["calls"][1] = self.claude_call("d1", "d", model="claude-haiku-4-5", input_tokens=250000, cached_input_tokens=200000)
+        self.assert_invalid(payload, "implementation boundary")
+
+        payload = whole_task()
+        payload["calls"][0]["usage"]["input_tokens"] = 128001
+        payload["calls"][0]["usage"]["cached_input_tokens"] = 100
+        self.assert_invalid(payload, "implementation boundary")
+
+    def test_spark_has_no_rate_and_stays_unavailable(self) -> None:
+        payload = whole_task()
+        payload["calls"][1]["model"] = "gpt-5.3-codex-spark"
+        result = self.calculate(payload)
+        self.assertEqual(result["calls"][1]["status"], "unavailable")
+        self.assertIn("missing", result["calls"][1]["reason"])
+        self.assertEqual(result["status"], "partial")
+
+    def test_legacy_snapshot_without_cache_write_keys_still_loads(self) -> None:
+        legacy = PLUGIN / "pricing" / "2026-09-04.json"
+        result = cost_receipt.calculate_receipt(whole_task(), legacy)
+        self.assertEqual(result["status"], "observed_tokens_api_estimate")
+
     def test_cli_outputs_json_and_honors_optional_pricing_path(self) -> None:
         completed = subprocess.run(
             [sys.executable, str(SCRIPT), str(EXAMPLE), "--pricing", str(PRICING)],
@@ -277,7 +380,17 @@ class CostReceiptTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         result = json.loads(completed.stdout)
         self.assertTrue(result["illustrative"])
-        self.assertEqual(result["pricing"]["snapshot_date"], "2026-09-04")
+        self.assertEqual(result["pricing"]["snapshot_date"], "2026-09-06")
+
+    def test_cli_default_pricing_is_latest_snapshot(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT), str(EXAMPLE)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["pricing"]["snapshot_date"], "2026-09-06")
 
     def test_cli_rejects_nonfinite_json_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

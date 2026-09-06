@@ -113,10 +113,19 @@ def _load_pricing(path: Path) -> tuple[dict[str, dict[str, Any]], dict[str, Any]
             key: _decimal(entry[key], f"pricing.models.{name}.{key}")
             if key in entry
             else None
-            for key in ("input", "cached_input", "output")
+            for key in ("input", "cached_input", "cache_write_5m", "cache_write_1h", "output")
         }
+        max_override = None
+        if "max_standard_input_tokens" in entry:
+            max_override = _tokens(
+                entry["max_standard_input_tokens"],
+                f"pricing.models.{name}.max_standard_input_tokens",
+            )
+            if max_override == 0:
+                raise ReceiptError(f"pricing.models.{name}.max_standard_input_tokens must be positive")
         parsed[name] = {
             **parsed_rates,
+            "max_standard_input_tokens": max_override,
             "promotional": _boolean(
                 entry.get("promotional"), f"pricing.models.{name}.promotional"
             ),
@@ -151,13 +160,16 @@ def _validate_usage(raw: Any, call_label: str) -> dict[str, Any]:
         "reason",
         "input_tokens",
         "cached_input_tokens",
+        "cache_write_5m_input_tokens",
+        "cache_write_1h_input_tokens",
         "output_tokens",
         "reasoning_tokens",
     }
     unknown_keys = sorted(set(usage) - allowed_keys)
     if unknown_keys:
         raise ReceiptError(
-            f"{call_label}.usage contains unsupported fields: {', '.join(unknown_keys)}; cache-write telemetry is unsupported"
+            f"{call_label}.usage contains unsupported fields: {', '.join(unknown_keys)}; "
+            "cache writes must be reported as cache_write_5m_input_tokens / cache_write_1h_input_tokens"
         )
     kind = _string(usage.get("kind"), f"{call_label}.usage.kind")
     if kind not in USAGE_KINDS:
@@ -165,7 +177,14 @@ def _validate_usage(raw: Any, call_label: str) -> dict[str, Any]:
             f"{call_label}.usage.kind must be observed, estimated, partial, or unavailable"
         )
     source = _string(usage.get("source"), f"{call_label}.usage.source")
-    token_keys = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens")
+    token_keys = (
+        "input_tokens",
+        "cached_input_tokens",
+        "cache_write_5m_input_tokens",
+        "cache_write_1h_input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+    )
     present = {key: _tokens(usage[key], f"{call_label}.usage.{key}") for key in token_keys if key in usage}
 
     if kind in {"observed", "estimated"}:
@@ -183,12 +202,20 @@ def _validate_usage(raw: Any, call_label: str) -> dict[str, Any]:
 
     input_tokens = present.get("input_tokens")
     cached_tokens = present.get("cached_input_tokens")
+    write_5m = present.get("cache_write_5m_input_tokens")
+    write_1h = present.get("cache_write_1h_input_tokens")
     output_tokens = present.get("output_tokens")
     reasoning_tokens = present.get("reasoning_tokens")
-    if input_tokens is None and "cached_input_tokens" in present:
-        raise ReceiptError(f"{call_label}.usage.cached_input_tokens requires input_tokens")
-    if input_tokens is not None and cached_tokens is not None and cached_tokens > input_tokens:
-        raise ReceiptError(f"{call_label}.usage.cached_input_tokens must be a subset of input_tokens")
+    for subset_key in ("cached_input_tokens", "cache_write_5m_input_tokens", "cache_write_1h_input_tokens"):
+        if input_tokens is None and subset_key in present:
+            raise ReceiptError(f"{call_label}.usage.{subset_key} requires input_tokens")
+    if input_tokens is not None:
+        cache_components = sum(value for value in (cached_tokens, write_5m, write_1h) if value is not None)
+        if cache_components > input_tokens:
+            raise ReceiptError(
+                f"{call_label}.usage cached_input_tokens + cache_write_5m_input_tokens + cache_write_1h_input_tokens "
+                "must be a subset of input_tokens"
+            )
     if output_tokens is None and "reasoning_tokens" in present:
         raise ReceiptError(f"{call_label}.usage.reasoning_tokens requires output_tokens")
     if output_tokens is not None and reasoning_tokens is not None and reasoning_tokens > output_tokens:
@@ -200,14 +227,36 @@ def _validate_usage(raw: Any, call_label: str) -> dict[str, Any]:
         "reason": usage.get("reason"),
         "input_tokens": input_tokens,
         "cached_input_tokens": cached_tokens,
+        "cache_write_5m_input_tokens": write_5m,
+        "cache_write_1h_input_tokens": write_1h,
         "output_tokens": output_tokens,
         "reasoning_tokens": reasoning_tokens,
     }
 
 
+def _cache_write_total(usage: dict[str, Any]) -> int:
+    return (usage["cache_write_5m_input_tokens"] or 0) + (usage["cache_write_1h_input_tokens"] or 0)
+
+
+def _missing_cache_write_rates(usage: dict[str, Any], rates: dict[str, Any]) -> list[str]:
+    """Rate names a call needs but the model does not publish (only when write tokens are non-zero)."""
+    missing: list[str] = []
+    if (usage["cache_write_5m_input_tokens"] or 0) > 0 and rates["cache_write_5m"] is None:
+        missing.append("cache_write_5m")
+    if (usage["cache_write_1h_input_tokens"] or 0) > 0 and rates["cache_write_1h"] is None:
+        missing.append("cache_write_1h")
+    return missing
+
+
 def _price_known(
-    usage: dict[str, Any], rates: dict[str, Any]
+    usage: dict[str, Any], rates: dict[str, Any], *, fold_cache_writes: bool = False
 ) -> tuple[Decimal, list[str], bool]:
+    """Price the known token fields.
+
+    With ``fold_cache_writes`` the cache-write tokens are charged at the plain input
+    rate. That is only correct for a same-token repricing onto a model whose provider
+    publishes no cache-write charge (OpenAI); routed pricing must not use it.
+    """
     cost = Decimal(0)
     missing: list[str] = []
     priced_component = False
@@ -219,7 +268,18 @@ def _price_known(
         if cached is None:
             missing.append("cached_input_tokens")
     else:
-        cost += (Decimal(input_tokens - cached) * rates["input"] + Decimal(cached) * rates["cached_input"]) / MILLION
+        write_5m = usage["cache_write_5m_input_tokens"] or 0
+        write_1h = usage["cache_write_1h_input_tokens"] or 0
+        if fold_cache_writes:
+            uncached = input_tokens - cached
+            cost += (Decimal(uncached) * rates["input"] + Decimal(cached) * rates["cached_input"]) / MILLION
+        else:
+            uncached = input_tokens - cached - write_5m - write_1h
+            cost += (Decimal(uncached) * rates["input"] + Decimal(cached) * rates["cached_input"]) / MILLION
+            if write_5m:
+                cost += Decimal(write_5m) * rates["cache_write_5m"] / MILLION
+            if write_1h:
+                cost += Decimal(write_1h) * rates["cache_write_1h"] / MILLION
         priced_component = True
     output_tokens = usage["output_tokens"]
     if output_tokens is None:
@@ -332,14 +392,14 @@ def calculate_receipt(payload: dict[str, Any], pricing_path: Path) -> dict[str, 
         if effort is not None:
             effort = _string(effort, f"calls[{index}].effort")
         usage = _validate_usage(call.get("usage"), f"calls[{index}]")
-        if (
-            usage["input_tokens"] is not None
-            and usage["input_tokens"]
-            > pricing_metadata["implementation_max_input_tokens"]
-        ):
+        model_rates = rates.get(model)
+        max_input = pricing_metadata["implementation_max_input_tokens"]
+        if model_rates is not None and model_rates["max_standard_input_tokens"] is not None:
+            max_input = model_rates["max_standard_input_tokens"]
+        if usage["input_tokens"] is not None and usage["input_tokens"] > max_input:
             raise ReceiptError(
                 f"calls[{index}].usage.input_tokens exceeds the conservative implementation boundary of "
-                f"{pricing_metadata['implementation_max_input_tokens']}; long-context pricing is unsupported"
+                f"{max_input} for model {model}; long-context pricing is unsupported"
             )
         result: dict[str, Any] = {
             "call_id": call_id,
@@ -351,12 +411,13 @@ def calculate_receipt(payload: dict[str, Any], pricing_path: Path) -> dict[str, 
             "usage_source": usage["source"],
             "input_tokens": usage["input_tokens"],
             "cached_input_tokens": usage["cached_input_tokens"],
+            "cache_write_5m_input_tokens": usage["cache_write_5m_input_tokens"],
+            "cache_write_1h_input_tokens": usage["cache_write_1h_input_tokens"],
             "output_tokens": usage["output_tokens"],
             "reasoning_tokens_included_in_output": usage["reasoning_tokens"],
             "context": {"value": context, "source": context_source},
             "service_tier": {"value": tier, "source": tier_source},
         }
-        model_rates = rates.get(model)
         if model_rates is None:
             result.update(status="unavailable", reason=f"no rate for model {model}")
         elif missing_rates := [
@@ -365,6 +426,14 @@ def calculate_receipt(payload: dict[str, Any], pricing_path: Path) -> dict[str, 
             result.update(
                 status="unavailable",
                 reason=f"missing {', '.join(missing_rates)} rate for model {model}",
+            )
+        elif missing_write_rates := _missing_cache_write_rates(usage, model_rates):
+            result.update(
+                status="unavailable",
+                reason=(
+                    f"missing {', '.join(missing_write_rates)} rate for model {model}; "
+                    "this call reports cache-write tokens, and pricing them at the base input rate would understate the routed price"
+                ),
             )
         elif usage["kind"] == "unavailable":
             result.update(status="unavailable", reason=usage["reason"])
@@ -442,13 +511,25 @@ def calculate_receipt(payload: dict[str, Any], pricing_path: Path) -> dict[str, 
     else:
         astra_total = Decimal(0)
         astra_rates = rates["gpt-6-astra"]
+        any_cache_writes = False
         for raw in calls_input:
             usage = _validate_usage(raw["usage"], "comparison call")
-            repriced, missing, _ = _price_known(usage, astra_rates)
+            any_cache_writes = any_cache_writes or _cache_write_total(usage) > 0
+            repriced, missing, _ = _price_known(usage, astra_rates, fold_cache_writes=True)
             if missing:  # Defensive; all_observed_priced already excludes this.
                 raise ReceiptError("internal comparison error: observed usage is incomplete")
             astra_total += repriced
         routed_total = sum((Decimal(result["cost_usd"]) for result in call_results), Decimal(0))
+        limitations = [
+            "This reprices the same observed tokens; it does not predict tokens an all-Astra run would use.",
+            "It does not establish actual net task savings, quality changes, or speed changes.",
+            "It does not represent ChatGPT subscription billing or usage-credit consumption.",
+        ]
+        if any_cache_writes:
+            limitations.append(
+                "Anthropic cache-write tokens are repriced at Astra's base input rate because OpenAI publishes no "
+                "cache-write charge; an all-Astra run would not have produced Anthropic cache writes at all."
+            )
         comparison = {
             "status": "available",
             "label": "same-token API price comparison (not a measured all-Astra counterfactual)",
@@ -456,11 +537,7 @@ def calculate_receipt(payload: dict[str, Any], pricing_path: Path) -> dict[str, 
             "routed_api_price_usd": _money(routed_total),
             "same_tokens_at_astra_api_price_usd": _money(astra_total),
             "api_price_difference_usd": _money(astra_total - routed_total),
-            "limitations": [
-                "This reprices the same observed tokens; it does not predict tokens an all-Astra run would use.",
-                "It does not establish actual net task savings, quality changes, or speed changes.",
-                "It does not represent ChatGPT subscription billing or usage-credit consumption.",
-            ],
+            "limitations": limitations,
         }
 
     receipt: dict[str, Any] = {
@@ -480,6 +557,7 @@ def calculate_receipt(payload: dict[str, Any], pricing_path: Path) -> dict[str, 
         "accounting": {
             "aggregation": "unique atomic calls only",
             "cached_input": "included within input_tokens and charged at the cached-input rate",
+            "cache_write": "cache_write_5m/1h_input_tokens are included within input_tokens and charged at the model's cache-write rates; absent fields mean no cache writes were reported, not zero-cost writes",
             "reasoning": "included within output_tokens and not added again",
             "effort": "metadata only; no price multiplier applied",
         },
@@ -502,7 +580,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pricing",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "pricing" / "2026-09-04.json",
+        default=Path(__file__).resolve().parent.parent / "pricing" / "2026-09-06.json",
         help="versioned pricing snapshot JSON",
     )
     return parser

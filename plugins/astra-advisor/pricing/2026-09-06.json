@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "snapshot_date": "2026-09-06",
+  "verified_on": "2026-09-06",
+  "currency": "USD",
+  "unit": "per_million_tokens",
+  "eligibility": "standard_short_context",
+  "implementation_max_input_tokens": 128000,
+  "models": {
+    "gpt-6-astra": {
+      "input": "10",
+      "cached_input": "1",
+      "output": "50",
+      "promotional": false,
+      "verified_on": "2026-09-04",
+      "source_url": "https://developers.openai.com/api/docs/models/gpt-6-astra"
+    },
+    "gpt-5.6-sol": {
+      "input": "4",
+      "cached_input": "0.4",
+      "output": "20",
+      "promotional": true,
+      "verified_on": "2026-09-04",
+      "freshness_disclosure": "Promotional pricing verified on 2026-09-04; re-verify before later use.",
+      "source_url": "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+    },
+    "gpt-5.6-terra": {
+      "input": "2",
+      "cached_input": "0.2",
+      "output": "12",
+      "promotional": false,
+      "verified_on": "2026-09-04",
+      "source_url": "https://developers.openai.com/api/docs/models/gpt-5.6-terra"
+    },
+    "gpt-5.6-luna": {
+      "input": "0.2",
+      "cached_input": "0.02",
+      "output": "1.2",
+      "promotional": false,
+      "verified_on": "2026-09-04",
+      "source_url": "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
+    },
+    "gpt-5.3-codex-spark": {
+      "promotional": false,
+      "verified_on": "2026-09-06",
+      "freshness_disclosure": "No public API rate was published for gpt-5.3-codex-spark on developers.openai.com/api/docs/pricing as of 2026-09-06; bridge-agent usage on this model is reported as unavailable, never zero.",
+      "source_url": "https://developers.openai.com/api/docs/pricing"
+    },
+    "claude-opus-5": {
+      "input": "5",
+      "cached_input": "0.5",
+      "cache_write_5m": "6.25",
+      "cache_write_1h": "10",
+      "output": "25",
+      "max_standard_input_tokens": 1000000,
+      "promotional": false,
+      "verified_on": "2026-09-06",
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing"
+    },
+    "claude-sonnet-5": {
+      "input": "2",
+      "cached_input": "0.2",
+      "cache_write_5m": "2.5",
+      "cache_write_1h": "4",
+      "output": "10",
+      "max_standard_input_tokens": 1000000,
+      "promotional": false,
+      "verified_on": "2026-09-06",
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing"
+    },
+    "claude-haiku-4-5": {
+      "input": "1",
+      "cached_input": "0.1",
+      "cache_write_5m": "1.25",
+      "cache_write_1h": "2",
+      "output": "5",
+      "max_standard_input_tokens": 200000,
+      "promotional": false,
+      "verified_on": "2026-09-06",
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing"
+    }
+  },
+  "provenance": {
+    "method": "Official model and pricing pages fetched by the recording coordinator. OpenAI rows are carried forward unchanged from the 2026-09-04 snapshot (per-model verified_on). Anthropic rows were read from the platform.claude.com pricing table on 2026-09-06.",
+    "cache_write_note": "Anthropic bills prompt-cache writes separately: 5-minute writes at 1.25x and 1-hour writes at 2x the base input rate. cache_write_5m / cache_write_1h are USD per million tokens. OpenAI rows have no cache-write charge, so those keys are absent.",
+    "context_threshold_note": "implementation_max_input_tokens (128,000) is the default conservative per-call input boundary. A model may override it with max_standard_input_tokens when its official pricing page states standard pricing across a larger context: Anthropic prices Claude 4.6+ models at standard rates across the full 1M window; Claude Haiku 4.5 has a 200K window. These overrides are implementation support boundaries mirrored from official pages, not independent pricing claims.",
+    "notice": "These rates estimate equivalent API prices only. They do not represent ChatGPT subscription billing, Claude subscription billing, or usage-credit consumption."
+  }
+}
