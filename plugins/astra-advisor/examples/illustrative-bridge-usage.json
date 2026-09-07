@@ -47,7 +47,7 @@
     {
       "call_id": "bridge-review-example/native/1",
       "agent_id": "bridge-review-example",
-      "model": "gpt-5.3-codex-spark",
+      "model": "gpt-5.6-luna",
       "effort": "low",
       "aggregation": "atomic",
       "context": "standard",

@@ -357,12 +357,17 @@ class CostReceiptTests(unittest.TestCase):
         payload["calls"][0]["usage"]["cached_input_tokens"] = 100
         self.assert_invalid(payload, "implementation boundary")
 
-    def test_spark_has_no_rate_and_stays_unavailable(self) -> None:
-        payload = whole_task()
-        payload["calls"][1]["model"] = "gpt-5.3-codex-spark"
-        result = self.calculate(payload)
+    def test_rate_less_model_entry_is_unavailable_not_zero(self) -> None:
+        snapshot = json.loads(PRICING.read_text(encoding="utf-8"))
+        snapshot["models"]["gpt-no-rate"] = {"promotional": False, "source_url": "https://example.invalid/no-rate"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pricing.json"
+            path.write_text(json.dumps(snapshot), encoding="utf-8")
+            payload = whole_task()
+            payload["calls"][1]["model"] = "gpt-no-rate"
+            result = cost_receipt.calculate_receipt(payload, path)
         self.assertEqual(result["calls"][1]["status"], "unavailable")
-        self.assertIn("missing", result["calls"][1]["reason"])
+        self.assertIn("missing input, cached_input, output rate", result["calls"][1]["reason"])
         self.assertEqual(result["status"], "partial")
 
     def test_legacy_snapshot_without_cache_write_keys_still_loads(self) -> None:

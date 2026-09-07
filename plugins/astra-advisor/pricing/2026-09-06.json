@@ -40,12 +40,6 @@
       "verified_on": "2026-09-04",
       "source_url": "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
     },
-    "gpt-5.3-codex-spark": {
-      "promotional": false,
-      "verified_on": "2026-09-06",
-      "freshness_disclosure": "No public API rate was published for gpt-5.3-codex-spark on developers.openai.com/api/docs/pricing as of 2026-09-06; bridge-agent usage on this model is reported as unavailable, never zero.",
-      "source_url": "https://developers.openai.com/api/docs/pricing"
-    },
     "claude-opus-5": {
       "input": "5",
       "cached_input": "0.5",

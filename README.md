@@ -62,15 +62,16 @@ Live tool metadata is authoritative. The current documented effort snapshot is:
 | --- | --- | --- |
 | `gpt-5.6-sol` | native | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
 | `gpt-5.6-terra` | native | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
-| `gpt-5.6-luna` | native | `low`, `medium`, `high`, `xhigh`, `max` |
-| `gpt-5.3-codex-spark` | native, bridge relay only | `low` |
+| `gpt-5.6-luna` | native; also the bridge relay at `low` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `gpt-5.5` | native (previous generation, listed by the spawn schema) | `low`, `medium`, `high`, `xhigh` |
 | `claude-opus-5` / `claude-sonnet-5` / `claude-haiku-4-5` | bridge | `low`, `medium`, `high`, `xhigh`, `max` |
 
 ## Claude bridge lane (0.3.0)
 
-`collaboration.spawn_agent` only knows Codex's own model catalog, so a Claude model
-cannot be spawned natively. Instead Astra spawns a cheap `gpt-5.3-codex-spark`
-subagent at `low` effort whose only job is to run
+`collaboration.spawn_agent` only accepts the models its live schema lists (on
+2026-09-06: Astra, Sol, Terra, Luna, GPT-5.5 — not `gpt-5.3-codex-spark`), so a Claude
+model cannot be spawned natively. Instead Astra spawns the cheapest listed model
+(`gpt-5.6-luna`) at `low` effort as a bridge whose only job is to run
 [`scripts/claude_bridge.py`](plugins/astra-advisor/scripts/claude_bridge.py) and
 relay its `CLAUDE RESULT` block verbatim. The script runs Claude Code headlessly
 (`claude -p --output-format json --model <id> --effort <level>`), writes the raw
@@ -81,9 +82,8 @@ mode (enforced read-only, `ASTRA REVIEW` contract appended); `--mode implement` 
 `bypassPermissions`, denies every permission prompt so a headless run cannot hang,
 and exits non-zero on failure. Follow-ups reuse Claude's `session_id` via `--resume`.
 
-Requirements: `claude` CLI on PATH, a sandbox that allows outbound network, and
-`gpt-5.3-codex-spark` present in the live spawn schema. If any is missing the lane
-fails closed. A bridge holds one native concurrency slot while it waits; for many
+Requirements: `claude` CLI on PATH, a sandbox that allows outbound network, and the
+bridge model present in the live spawn schema. If any is missing the lane fails closed. A bridge holds one native concurrency slot while it waits; for many
 Claude workers, one bridge should run several script invocations rather than one
 bridge per worker.
 
@@ -129,8 +129,7 @@ source URLs and standard short-context USD rates per million tokens with per-mod
 verification dates (OpenAI rows September 4, 2026; Anthropic rows September 6, 2026).
 The [2026-09-04 snapshot](plugins/astra-advisor/pricing/2026-09-04.json) is kept for
 historical receipts. These are historical estimates; Sol pricing is promotional and
-may change, and `gpt-5.3-codex-spark` has no public API rate, so bridge-agent usage is
-reported as unavailable rather than zero. Anthropic cache writes are priced at the
+may change. Anthropic cache writes are priced at the
 published 1.25x (5-minute) and 2x (1-hour) write rates from the
 `cache_write_5m_input_tokens` / `cache_write_1h_input_tokens` fields; a call that
 reports writes on a model without write rates is unavailable, not discounted. The

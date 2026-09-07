@@ -72,8 +72,8 @@ selection, not a contract that overrides live tool metadata:
 | --- | --- | --- |
 | `gpt-5.6-sol` | native | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
 | `gpt-5.6-terra` | native | `low`, `medium`, `high`, `xhigh`, `max`, `ultra` |
-| `gpt-5.6-luna` | native | `low`, `medium`, `high`, `xhigh`, `max` |
-| `gpt-5.3-codex-spark` | native, **bridge only** | `low` (relay work only; never an implementer or reviewer) |
+| `gpt-5.6-luna` | native; also the **bridge relay** at `low` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `gpt-5.5` | native (listed by the spawn schema; previous generation) | `low`, `medium`, `high`, `xhigh` |
 | `claude-opus-5` | bridge | `low`, `medium`, `high`, `xhigh`, `max` (`claude --effort`) |
 | `claude-sonnet-5` | bridge | `low`, `medium`, `high`, `xhigh`, `max` |
 | `claude-haiku-4-5` | bridge | `low`, `medium`, `high`, `xhigh`, `max` |
@@ -90,10 +90,13 @@ The bridge is the only way a Claude model enters the pool. `collaboration.spawn_
 resolves `model` against Codex's own catalog, so a Claude id passed there must fail
 closed. Instead:
 
-1. **Preflight.** Confirm `gpt-5.3-codex-spark` appears in the live spawn schema, the
-   sandbox permits outbound network (the bridge calls the Anthropic API), and `claude`
-   resolves on PATH. Any miss fails the lane closed with the reason named.
-2. **Spawn the bridge.** `collaboration.spawn_agent` with `model: gpt-5.3-codex-spark`,
+1. **Preflight.** Read the live `collaboration.spawn_agent` schema and pick the cheapest
+   model it lists as the bridge (currently `gpt-5.6-luna`; on 2026-09-06 the schema
+   listed `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5` and
+   not `gpt-5.3-codex-spark`). Confirm the sandbox permits outbound network (the bridge
+   calls the Anthropic API) and `claude` resolves on PATH. Any miss fails the lane
+   closed with the reason named.
+2. **Spawn the bridge.** `collaboration.spawn_agent` with `model: gpt-5.6-luna`,
    `reasoning_effort: low`, `fork_turns: none`, a `task_name` such as
    `bridge_review_auth_boundary`, and a message that contains the exact command to run
    and the exact prompt to feed it. The bridge holds one of the four concurrency slots
@@ -135,8 +138,9 @@ Hazards to name in the lifecycle updates when they apply: the bridge occupies a
 concurrency slot while idle (for many Claude workers, have one bridge run several
 script invocations sequentially or in the background rather than spawning one bridge
 per worker); all agents share the filesystem, so bound Claude's owned files exactly
-as for a native subagent; the bridge's own tokens are real cost with no public rate,
-so its calls appear in the receipt as `unavailable`, never zero.
+as for a native subagent; the bridge's own tokens are real cost and belong in the
+receipt as their own call (Luna has a published rate; if native metadata exposes no
+usage, record an explicit `unavailable` call, never zero).
 
 Lifecycle blocks for a bridge dispatch use the same shape as native ones, with the
 lane made explicit:
@@ -144,12 +148,12 @@ lane made explicit:
 ~~~text
 ASTRA DELEGATE <name>
 task: <bounded deliverable and owned files>
-requested: gpt-5.3-codex-spark / low  ->  claude-sonnet-5 / high (bridge, mode=review)
+requested: gpt-5.6-luna / low  ->  claude-sonnet-5 / high (bridge, mode=review)
 reason: <why this work warrants a Claude model and this effort>
 
 ASTRA RESULT <name> / <bridge agent ID or unavailable>
 status: <completed, failed, interrupted, or blocked; actual evidence>
-requested: gpt-5.3-codex-spark / low  ->  claude-sonnet-5 / high
+requested: gpt-5.6-luna / low  ->  claude-sonnet-5 / high
 observed: <bridge model or unobservable>  ->  <canonicalModel from raw JSON> / unobservable
 evidence: <native metadata source>  ->  <path to raw result JSON>; session <session_id>
 ~~~
@@ -261,13 +265,12 @@ standard rates. Effort is recorded without a rate multiplier.
 The snapshot records USD per million tokens and official source URLs with per-model
 verification dates supplied by the recording coordinator (OpenAI rows 2026-09-04,
 Anthropic rows 2026-09-06). It is a historical snapshot, not a live-price guarantee;
-Sol rates are promotional and `gpt-5.3-codex-spark` has no public API rate, so bridge
-agent usage stays `unavailable`. Disclose the snapshot date and freshness when showing
+Sol rates are promotional. Disclose the snapshot date and freshness when showing
 an estimate. Use a newly verified versioned snapshot if current prices are required.
 Do not silently change historical receipts.
 
 For a bridge dispatch, the receipt lists two agents and two calls: the bridge
-(`role: delegate` or `reviewer`, model `gpt-5.3-codex-spark`, native telemetry or an
+(`role: delegate` or `reviewer`, model `gpt-5.6-luna`, native telemetry or an
 explicit unavailable call) and the Claude run (same role, the `<out>.call.json` record
 the script wrote). The script maps Claude Code's `usage` onto the calculator schema:
 `input_tokens` = uncached + cache reads + cache writes, `cached_input_tokens` = cache
@@ -340,5 +343,4 @@ claims. Missing cache counts remain unknown; provide an explicit zero only when
 supported by the usage source. Unknown usage fields are rejected.
 
 See the [illustrative bridge input](../../../examples/illustrative-bridge-usage.json)
-for an executable fixture of a parent + bridge + Claude reviewer receipt (its Spark
-call prices as unavailable by design).
+for an executable fixture of a parent + Luna bridge + Claude reviewer receipt.

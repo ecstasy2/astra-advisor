@@ -41,8 +41,8 @@ implementation or verification in a subagent.
 ## Claude bridge lane
 
 Claude models (`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5`) join the pool
-through a **bridge**: a cheap native subagent (`gpt-5.3-codex-spark`, `reasoning_effort:
-low`, `fork_turns: none`) whose only job is to run the installed
+through a **bridge**: the cheapest native subagent the live spawn schema exposes
+(currently `gpt-5.6-luna`, `reasoning_effort: low`, `fork_turns: none`) whose only job is to run the installed
 `scripts/claude_bridge.py` and relay its `CLAUDE RESULT` block verbatim. The script runs
 Claude Code headlessly (`claude -p --output-format json`) with an explicit `--model`
 and `--effort`, writes the raw result JSON to disk, and emits a receipt-ready call
@@ -51,8 +51,10 @@ or when a fresh reviewer from a different model family adds independent evidence
 Read the bridge protocol in the operations reference before the first bridge dispatch;
 the bridge never edits, summarizes, or "helps", and Astra reads the raw JSON, not the
 relay, as the source of truth. The lane requires a network-capable sandbox and the
-`claude` CLI on PATH; if either is missing, or `gpt-5.3-codex-spark` is not in the live
-spawn schema, fail the delegation closed and report it.
+`claude` CLI on PATH; if either is missing, or the chosen bridge model is not in the
+live spawn schema, fail the delegation closed and report it. Never pick a bridge model
+that the live schema does not list (`gpt-5.3-codex-spark`, for example, appears in the
+model catalog but not in the spawn schema).
 
 Tools and their public schemas are authoritative. Select only an effort the current
 tool exposes. If a selected model, effort, spawn control, or required native tool is
@@ -118,7 +120,7 @@ difference a **same-token API price comparison**, never measured all-Astra behav
 actual net task savings, subscription charges, or improved quality/speed. If parent
 usage is missing, label any available delegated-only comparison separately. With no
 subagents there are no delegation savings. Effort is metadata, not a price multiplier.
-Use the versioned snapshot and disclose its date, promotional Sol pricing, and the
-absence of a public Spark rate. Reject unsupported pricing regimes rather than
+Use the versioned snapshot and disclose its date and promotional Sol pricing. Reject
+unsupported pricing regimes rather than
 silently using standard rates. An illustrative fixture is optional and must remain
 separate from this task's receipt.
