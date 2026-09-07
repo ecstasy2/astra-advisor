@@ -107,12 +107,13 @@ class NormalizeTests(unittest.TestCase):
 
     def test_report_block_is_verbatim_and_machine_readable(self) -> None:
         block = claude_bridge.render_result_block(
-            sample_result(), requested_model="claude-haiku-4-5", requested_effort="low", raw_path="/tmp/x.json"
+            sample_result(), requested_model="claude-sonnet-5", requested_effort="low", raw_path="/tmp/x.json"
         )
         self.assertTrue(block.startswith("CLAUDE RESULT\n"))
         self.assertIn("session_id: 5544f193-8451-4e8b-98d8-f9d749841809", block)
-        self.assertIn("observed_model: claude-haiku-4-5", block)
-        self.assertIn("requested: claude-haiku-4-5 / low", block)
+        self.assertIn("observed_model: claude-haiku-4-5", block)  # observed differs from requested: both shown
+        self.assertIn("requested: claude-sonnet-5 / low", block)
+        self.assertIn("observed_effort: unobservable", block)
         self.assertIn("status: completed", block)
         self.assertIn("total_cost_usd (claude code, list basis): 0.0330145", block)
         self.assertIn("raw_json: /tmp/x.json", block)
@@ -157,6 +158,16 @@ class CommandTests(unittest.TestCase):
         with self.assertRaisesRegex(claude_bridge.BridgeError, "effort"):
             claude_bridge.build_command(model="claude-opus-5", effort="ultra", mode="review", resume=None, max_budget_usd=None, extra_allowed_tools=[])
 
+    def test_haiku_refuses_effort_and_reports_na(self) -> None:
+        with self.assertRaisesRegex(claude_bridge.BridgeError, "does not accept an effort"):
+            claude_bridge.build_command(model="claude-haiku-4-5", effort="low", mode="review", resume=None, max_budget_usd=None, extra_allowed_tools=[])
+        argv = claude_bridge.build_command(model="claude-haiku-4-5", effort=None, mode="review", resume=None, max_budget_usd=None, extra_allowed_tools=[])
+        self.assertNotIn("--effort", argv)
+        block = claude_bridge.render_result_block(
+            sample_result(), requested_model="claude-haiku-4-5", requested_effort=None, raw_path="/tmp/x.json"
+        )
+        self.assertIn("observed_effort: n/a", block)
+
     def test_model_must_be_in_bridge_allowlist(self) -> None:
         with self.assertRaisesRegex(claude_bridge.BridgeError, "model"):
             claude_bridge.build_command(model="gpt-6-astra", effort=None, mode="review", resume=None, max_budget_usd=None, extra_allowed_tools=[])
@@ -186,7 +197,7 @@ class CliTests(unittest.TestCase):
             completed = subprocess.run(
                 [
                     sys.executable, str(SCRIPT),
-                    "--model", "claude-haiku-4-5", "--effort", "low", "--mode", "review",
+                    "--model", "claude-haiku-4-5", "--mode", "review",
                     "--agent-id", "bridge-7", "--out", str(out),
                 ],
                 input="Say BRIDGE-OK.\n",

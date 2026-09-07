@@ -28,6 +28,9 @@ from typing import Any
 
 BRIDGE_MODELS = ("claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# The Anthropic API rejects `effort` for these models; Claude Code accepts the flag but
+# cannot enforce it, so the bridge refuses to record a requested effort for them.
+NO_EFFORT_MODELS = ("claude-haiku-4-5",)
 MODES = {
     # Reviewer: plan mode blocks every mutating tool; nothing can be approved headlessly.
     "review": ["--permission-mode", "plan"],
@@ -69,6 +72,10 @@ def build_command(
         raise BridgeError(f"model {model!r} is not in the bridge allowlist {list(BRIDGE_MODELS)}")
     if effort is not None and effort not in EFFORTS:
         raise BridgeError(f"effort {effort!r} is not supported by `claude --effort` (choose from {list(EFFORTS)})")
+    if effort is not None and model in NO_EFFORT_MODELS:
+        raise BridgeError(
+            f"model {model!r} does not accept an effort level at the API; omit --effort and report it as n/a"
+        )
     if mode not in MODES:
         raise BridgeError(f"mode {mode!r} must be one of {sorted(MODES)}")
     argv = ["claude", "-p", "--output-format", "json", "--permission-prompts", "none", "--model", model]
@@ -190,7 +197,11 @@ def render_result_block(
         f"session_id: {result.get('session_id', 'unavailable')}",
         f"requested: {requested_model} / {requested_effort or 'n/a'}",
         f"observed_model: {observed}",
-        "observed_effort: unobservable (Claude Code does not echo --effort in its result JSON)",
+        (
+            "observed_effort: n/a (this model does not accept an effort level at the API)"
+            if requested_model in NO_EFFORT_MODELS
+            else "observed_effort: unobservable (Claude Code does not echo --effort in its result JSON)"
+        ),
         f"num_turns: {result.get('num_turns', 'unavailable')}",
         "usage: "
         + json.dumps(

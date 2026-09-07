@@ -91,7 +91,8 @@ Try the script directly (prompt on stdin, never argv):
 
 ~~~sh
 printf 'Summarize README.md in two sentences.' | python3 plugins/astra-advisor/scripts/claude_bridge.py \
-  --model claude-haiku-4-5 --effort low --mode review --agent-id demo --out /tmp/astra/demo.json
+  --model claude-haiku-4-5 --mode review --agent-id demo --out /tmp/astra/demo.json
+# (Haiku 4.5 takes no --effort; Opus 5 / Sonnet 5 accept --effort low|medium|high|xhigh|max)
 ~~~
 
 If a selected model, effort, control, or tool is unavailable, conflicting, or

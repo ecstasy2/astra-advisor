@@ -158,6 +158,65 @@ observed: <bridge model or unobservable>  ->  <canonicalModel from raw JSON> / u
 evidence: <native metadata source>  ->  <path to raw result JSON>; session <session_id>
 ~~~
 
+## Claude model guidance
+
+The spawn schema describes the native models in one line each; Claude models never
+appear there, so this is their equivalent. Prices are USD per million input/output
+tokens from the 2026-09-06 snapshot; positioning is from Anthropic's published model
+and pricing pages on the same date. Guidance, not a contract: live `claude` behavior
+and the pricing snapshot win.
+
+| Model | $/M in/out | Context | Positioning | Typical fit in this pool |
+| --- | --- | --- | --- | --- |
+| `claude-opus-5` | 5 / 25 | 1M | Anthropic's top general tier below Fable; adaptive thinking on by default; `effort` low–max | High-risk implementation, architecture-sensitive fixes, fresh review of a substantial diff. Half Astra's list price. |
+| `claude-sonnet-5` | 2 / 10 | 1M | Production coding workhorse; `effort` low–max (`xhigh` is Claude Code's own default) | Default Claude implementer and reviewer. Terra-priced with a 1M window. |
+| `claude-haiku-4-5` | 1 / 5 | 200K | Fast and cheap; the API does not accept `effort` for this model | Bounded reads, summaries, mechanical edits, cheap second-opinion review of small diffs. Not for large change sets (200K window). |
+
+Facts that change how you dispatch:
+
+- **Haiku and `--effort`.** Claude Code accepts `--effort` for every model, but the API
+  rejects `effort` on Haiku 4.5, so the flag is not enforceable there. The bridge script
+  reports Haiku's effort as `n/a`; request it as `n/a` in `ASTRA DELEGATE` and never
+  claim effort control for Haiku.
+- **`claude-fable-5-1` is deliberately outside the bridge allowlist.** It is priced at
+  Astra's tier (10 / 50) with thinking always on, so it offers no delegation price
+  difference; add it only if a user explicitly wants a Fable-tier adversarial review.
+- **Cache writes are real cost.** Claude Code writes a 1-hour prompt cache (2x input
+  rate) on each fresh session — both dry runs showed ~15k write tokens for a trivial
+  prompt. Prefer `--resume <session_id>` follow-ups over fresh spawns for the same
+  deliverable so the write amortizes, and expect a fresh short task to cost more than
+  its output tokens suggest.
+- **Tokenizer.** Opus 5 / Sonnet 5 count roughly 30% more tokens than earlier Claude
+  models for the same text; token counts are not comparable one-for-one with GPT
+  counts. The receipt already avoids that claim.
+- **Read-only review is enforced, not promised.** `--mode review` runs in plan mode;
+  a Write attempt returns "blocked due to plan mode enforcement". Native reviewers
+  cannot offer that guarantee, which is the main reason to route a fresh review to
+  Claude when isolation matters.
+
+## Selection rubric
+
+Defaults for the `ASTRA ROUTE` decision, overridable whenever the task's evidence
+says otherwise; state the override reason in `risk:`. This is a rubric, not a
+role-to-model mapping: it starts from the work's risk and shape, never from a job
+title, and every choice still has to exist in the live schema.
+
+| Work shape | Risk | Default lane / model / effort | Why |
+| --- | --- | --- | --- |
+| Read, summarize, locate, inventory | low | native `gpt-5.6-luna` / low, or bridge `claude-haiku-4-5` / n/a when the input is prose-heavy | Cheapest; correctness is easy to check |
+| Bounded mechanical edit with clear tests | low | native `gpt-5.6-luna` / medium or `gpt-5.6-terra` / low | Tests carry the verification |
+| Bounded feature slice, interfaces fixed | medium | native `gpt-5.6-terra` / high, or bridge `claude-sonnet-5` / high when the slice is long-context or the parent wants a second model family in the diff history | Balanced cost and capability |
+| Cross-cutting or architecture-sensitive change | high | native `gpt-5.6-sol` / xhigh, or bridge `claude-opus-5` / xhigh | Capability first; parent still integrates and verifies |
+| Fresh review of a small diff | any | native `gpt-5.6-luna` / high or bridge `claude-haiku-4-5` / n/a | Independent eyes at low cost |
+| Fresh review of a substantial or risky diff | high | bridge `claude-sonnet-5` / xhigh or `claude-opus-5` / max (enforced read-only, different model family) or native `gpt-5.6-sol` / xhigh | Strongest independent evidence; plan mode guarantees no edits |
+| Adversarial second opinion after `fix-first` | high | a **different** model family than the first reviewer | Avoid correlated blind spots |
+
+Tie-breakers: prefer the cheaper option when acceptance evidence (tests, diffs,
+checks) is strong and parent verification will rerun it; prefer the stronger option
+when the failure would be silent or expensive to unwind; prefer a different model
+family for the second review of the same change; never spend a bridge on work the
+parent can finish faster itself.
+
 ## Evidence and review
 
 The public spawn and thread metadata are authoritative for model and effort. Use
