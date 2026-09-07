@@ -125,6 +125,24 @@ require((plugin / "scripts" / "cost_receipt.py").is_file(), "missing cost receip
 require((plugin / "tests" / "test_cost_receipt.py").is_file(), "missing cost receipt tests")
 require((plugin / "scripts" / "claude_bridge.py").is_file(), "missing Claude bridge script")
 require((plugin / "tests" / "test_claude_bridge.py").is_file(), "missing Claude bridge tests")
+require((plugin / "scripts" / "codex_bridge.py").is_file(), "missing Codex bridge script")
+require((plugin / "tests" / "test_codex_bridge.py").is_file(), "missing Codex bridge tests")
+
+# Claude Code mirror skill (parent = Claude Code session, bridge = codex exec).
+cc_skill_root = repo / "claude-code" / "skills" / "orchestration-claude"
+cc_skill_path = cc_skill_root / "SKILL.md"
+cc_ops_path = cc_skill_root / "references" / "operations.md"
+require(cc_skill_path.is_file(), f"missing Claude Code skill: {cc_skill_path}")
+require(cc_ops_path.is_file(), f"missing Claude Code operations reference: {cc_ops_path}")
+if cc_skill_path.is_file():
+    cc_text = cc_skill_path.read_text(encoding="utf-8")
+    require(cc_text.startswith("---\n") and "name: orchestration-claude" in cc_text, "Claude Code skill frontmatter must name orchestration-claude")
+    require("codex_bridge.py" in cc_text, "Claude Code skill must name the codex bridge script")
+    for target in markdown_links(cc_text):
+        check_relative_link(target, cc_skill_root, "Claude Code skill link")
+if cc_ops_path.is_file():
+    for target in markdown_links(cc_ops_path.read_text(encoding="utf-8")):
+        check_relative_link(target, cc_ops_path.parent, "Claude Code operations link")
 require((plugin / "pricing" / "2026-09-04.json").is_file(), "missing historical pricing snapshot")
 require((plugin / "pricing" / "2026-09-06.json").is_file(), "missing current pricing snapshot")
 require((plugin / "examples" / "illustrative-bridge-usage.json").is_file(), "missing illustrative bridge fixture")

@@ -155,6 +155,28 @@ subsets, refuses overlapping aggregates, and keeps unknown usage separate from z
 See the [operations reference](plugins/astra-advisor/skills/orchestration/references/operations.md)
 for the input contract and receipt policy.
 
+## Claude Code mirror skill
+
+The same design runs the other way round. `claude-code/skills/orchestration-claude/`
+is a Claude Code skill whose parent is the Claude Code session, whose native lane is
+the `Agent` tool (Claude models), and whose bridge lane is
+[`scripts/codex_bridge.py`](plugins/astra-advisor/scripts/codex_bridge.py): a headless
+`codex exec --json` runner with an explicit model, reasoning effort, and sandbox
+(`review` = OS-level read-only), which reads the Codex session rollout file to report
+the *observed* model, effort, and sandbox and emits the same receipt-ready call record.
+Blocks are `ORCH ROUTE / DELEGATE / RESULT / REVIEW`; receipts use
+`cost_receipt.py --baseline <parent claude model>`. Install by symlinking the skill
+directory into `~/.claude/skills/`:
+
+~~~sh
+ln -s /absolute/path/to/astra-advisor/claude-code/skills/orchestration-claude ~/.claude/skills/orchestration-claude
+~~~
+
+Known asymmetry: Claude Code exposes no token usage for the parent or `Agent`
+delegates, so receipts from that side are `partial` unless every call ran through the
+bridge; the Codex side exposes no native child usage either, so both directions report
+what they can observe and nothing more.
+
 ## ChatGPT app tasks
 
 Separate app tasks require an explicit user request. For an explicit Codex app task,

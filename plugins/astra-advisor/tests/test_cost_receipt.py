@@ -106,7 +106,8 @@ class CostReceiptTests(unittest.TestCase):
         self.assertEqual(result["routed_api_price_usd"], "0.02577")
         comparison = result["same_token_api_price_comparison"]
         self.assertEqual(comparison["scope"], "whole_task")
-        self.assertEqual(comparison["same_tokens_at_astra_api_price_usd"], "0.0646")
+        self.assertEqual(comparison["baseline_model"], "gpt-6-astra")
+        self.assertEqual(comparison["same_tokens_at_baseline_api_price_usd"], "0.0646")
         self.assertEqual(comparison["api_price_difference_usd"], "0.03883")
         self.assertIn("not a measured", comparison["label"])
         self.assertTrue(result["calls"][2]["promotional_rate"])
@@ -339,8 +340,25 @@ class CostReceiptTests(unittest.TestCase):
         self.assertEqual(comparison["status"], "available")
         # Astra repricing of the claude call: (10000-4000)*10 + 4000*1 + 1000*50 = 60000+4000+50000 = 114000 per 1M
         # p1: (1000-100)*10 + 100*1 + 200*50 = 9000+100+10000 = 19100 ; r1: 1000*10 + 100*50 = 15000
-        self.assertEqual(comparison["same_tokens_at_astra_api_price_usd"], "0.1481")
-        self.assertTrue(any("cache-write" in item for item in comparison["limitations"]))
+        self.assertEqual(comparison["same_tokens_at_baseline_api_price_usd"], "0.1481")
+        self.assertTrue(any("ache-write" in item for item in comparison["limitations"]))
+
+    def test_claude_baseline_reprices_cache_writes_at_its_own_write_rates(self) -> None:
+        payload = whole_task()
+        payload["calls"][1] = self.claude_call("d1", "d")
+        result = cost_receipt.calculate_receipt(payload, PRICING, baseline_model="claude-sonnet-5")
+        comparison = result["same_token_api_price_comparison"]
+        self.assertEqual(comparison["baseline_model"], "claude-sonnet-5")
+        # p1 at sonnet: 900*2 + 100*0.2 + 200*10 = 1800+20+2000 = 3820
+        # d1 at sonnet: 1000*2 + 4000*0.2 + 2000*2.5 + 3000*4 + 1000*10 = 2000+800+5000+12000+10000 = 29800
+        # r1 at sonnet: 1000*2 + 100*10 = 3000  -> total 36620 per 1M
+        self.assertEqual(comparison["same_tokens_at_baseline_api_price_usd"], "0.03662")
+        self.assertTrue(any("own 5m/1h" in item for item in comparison["limitations"]))
+
+    def test_unknown_baseline_is_unavailable(self) -> None:
+        result = cost_receipt.calculate_receipt(whole_task(), PRICING, baseline_model="gpt-nope")
+        self.assertEqual(result["same_token_api_price_comparison"]["status"], "unavailable")
+        self.assertIn("gpt-nope", result["same_token_api_price_comparison"]["reason"])
 
     def test_per_model_max_input_override(self) -> None:
         payload = whole_task()

@@ -290,8 +290,17 @@ def _price_known(
     return cost, missing, priced_component
 
 
-def calculate_receipt(payload: dict[str, Any], pricing_path: Path) -> dict[str, Any]:
-    """Validate payload and return a non-billing API-equivalent receipt."""
+DEFAULT_BASELINE_MODEL = "gpt-6-astra"
+
+
+def calculate_receipt(
+    payload: dict[str, Any], pricing_path: Path, *, baseline_model: str = DEFAULT_BASELINE_MODEL
+) -> dict[str, Any]:
+    """Validate payload and return a non-billing API-equivalent receipt.
+
+    ``baseline_model`` is the parent model whose rates the same observed tokens are
+    repriced at (Astra for the Codex plugin; a Claude model for the Claude Code skill).
+    """
     if payload.get("schema_version") != SCHEMA_VERSION:
         raise ReceiptError("schema_version must equal 1")
     task_id = _string(payload.get("task_id"), "task_id")
@@ -503,40 +512,51 @@ def calculate_receipt(payload: dict[str, Any], pricing_path: Path) -> dict[str, 
             "status": "unavailable",
             "reason": "same-token comparison requires complete observed usage and rates for every in-scope call",
         }
-    elif "gpt-6-astra" not in rates or any(
-        rates["gpt-6-astra"].get(name) is None
+    elif baseline_model not in rates or any(
+        rates[baseline_model].get(name) is None
         for name in ("input", "cached_input", "output")
     ):
-        comparison = {"status": "unavailable", "reason": "Astra rate is unavailable"}
+        comparison = {"status": "unavailable", "reason": f"baseline rate for {baseline_model} is unavailable"}
     else:
-        astra_total = Decimal(0)
-        astra_rates = rates["gpt-6-astra"]
+        baseline_total = Decimal(0)
+        baseline_rates = rates[baseline_model]
+        baseline_has_write_rates = (
+            baseline_rates["cache_write_5m"] is not None and baseline_rates["cache_write_1h"] is not None
+        )
         any_cache_writes = False
         for raw in calls_input:
             usage = _validate_usage(raw["usage"], "comparison call")
             any_cache_writes = any_cache_writes or _cache_write_total(usage) > 0
-            repriced, missing, _ = _price_known(usage, astra_rates, fold_cache_writes=True)
+            repriced, missing, _ = _price_known(
+                usage, baseline_rates, fold_cache_writes=not baseline_has_write_rates
+            )
             if missing:  # Defensive; all_observed_priced already excludes this.
                 raise ReceiptError("internal comparison error: observed usage is incomplete")
-            astra_total += repriced
+            baseline_total += repriced
         routed_total = sum((Decimal(result["cost_usd"]) for result in call_results), Decimal(0))
         limitations = [
-            "This reprices the same observed tokens; it does not predict tokens an all-Astra run would use.",
+            f"This reprices the same observed tokens at {baseline_model}'s rates; it does not predict tokens an all-{baseline_model} run would use.",
             "It does not establish actual net task savings, quality changes, or speed changes.",
-            "It does not represent ChatGPT subscription billing or usage-credit consumption.",
+            "It does not represent ChatGPT or Claude subscription billing or usage-credit consumption.",
         ]
-        if any_cache_writes:
+        if any_cache_writes and not baseline_has_write_rates:
             limitations.append(
-                "Anthropic cache-write tokens are repriced at Astra's base input rate because OpenAI publishes no "
-                "cache-write charge; an all-Astra run would not have produced Anthropic cache writes at all."
+                f"Cache-write tokens are repriced at {baseline_model}'s base input rate because its provider publishes no "
+                f"cache-write charge; an all-{baseline_model} run would not have produced those cache writes at all."
+            )
+        elif any_cache_writes:
+            limitations.append(
+                f"Cache-write tokens are repriced at {baseline_model}'s own 5m/1h cache-write rates; a different "
+                "caching pattern under the baseline model would change this figure."
             )
         comparison = {
             "status": "available",
-            "label": "same-token API price comparison (not a measured all-Astra counterfactual)",
+            "label": f"same-token API price comparison (not a measured all-{baseline_model} counterfactual)",
+            "baseline_model": baseline_model,
             "scope": scope,
             "routed_api_price_usd": _money(routed_total),
-            "same_tokens_at_astra_api_price_usd": _money(astra_total),
-            "api_price_difference_usd": _money(astra_total - routed_total),
+            "same_tokens_at_baseline_api_price_usd": _money(baseline_total),
+            "api_price_difference_usd": _money(baseline_total - routed_total),
             "limitations": limitations,
         }
 
@@ -583,6 +603,11 @@ def _parser() -> argparse.ArgumentParser:
         default=Path(__file__).resolve().parent.parent / "pricing" / "2026-09-06.json",
         help="versioned pricing snapshot JSON",
     )
+    parser.add_argument(
+        "--baseline",
+        default=DEFAULT_BASELINE_MODEL,
+        help="parent model whose rates the same observed tokens are repriced at (default: gpt-6-astra)",
+    )
     return parser
 
 
@@ -590,7 +615,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         payload = _read_json(args.input)
-        result = calculate_receipt(payload, args.pricing)
+        result = calculate_receipt(payload, args.pricing, baseline_model=args.baseline)
     except ReceiptError as exc:
         print(json.dumps({"schema_version": SCHEMA_VERSION, "status": "invalid", "errors": [str(exc)]}, indent=2))
         return 2
